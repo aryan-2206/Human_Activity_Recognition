@@ -6,7 +6,7 @@ A collaborative ML project comparing CNN, LSTM, SVM, Random Forest, and KNN mode
 
 | Person | Branch | Runs On | Produces |
 |---|---|---|---|
-| Akhil | `akhil-data` | Laptop / Colab | `data/processed/*.npy`, `models/knn.joblib`, `results/knn_*` |
+| Akhil | `akhil-data-knn` | Laptop / Colab | `data/processed/*.npy`, `models/knn.joblib`, `results/knn_*` |
 | Dhairya | `dhairya-classical` | Laptop | `src/evaluate.py`, `models/svm.joblib`, `models/rf.joblib`, `results/*_metrics.json` |
 | **Aryan** | **`aryan-cnn`** | **Colab (GPU) + Laptop** | **`models/cnn.keras`, `results/cnn_*`, `src/predict.py`** |
 | Indraneel | `indraneel-app` | Colab (GPU) + Laptop | `models/lstm.keras`, `results/lstm_*`, `app/app.py` |

@@ -68,4 +68,4 @@
   "n_samples": 2947,
   "train_time_s": 1192.8821628000587,
   "infer_ms_per_sample": 22.550795249410875
-}\n
+}

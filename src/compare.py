@@ -62,6 +62,8 @@ def collect_metrics(results_dir: str | Path = RESULTS_DIR) -> list[dict[str, Any
 
 def create_comparison(results_dir: str | Path = RESULTS_DIR) -> tuple[Path, Path]:
     """Write comparison.csv and comparison_metrics.png; return their paths."""
+    import matplotlib
+    matplotlib.use("Agg")
     from matplotlib import pyplot as plt
 
     folder = Path(results_dir)
@@ -73,7 +75,7 @@ def create_comparison(results_dir: str | Path = RESULTS_DIR) -> tuple[Path, Path
         writer.writerows(rows)
 
     # Compact grouped chart of all key scores, on a consistent 0-1 scale.
-    fig, ax = plt.subplots(figsize=(max(8, len(rows) * 1.5), 5))
+    fig, ax = plt.subplots(figsize=(max(8, len(rows) * 2.0), 5))
     x = list(range(len(rows)))
     width = 0.11
     for i, metric in enumerate(METRICS):
@@ -82,7 +84,7 @@ def create_comparison(results_dir: str | Path = RESULTS_DIR) -> tuple[Path, Path
     ax.set_xticks(x, [str(row["model"]) for row in rows])
     ax.set_ylim(0, 1.05)
     ax.set_ylabel("Score")
-    ax.set_title("Human Activity Recognition model comparison")
+    ax.set_title("Human Activity Recognition Model Comparison")
     ax.grid(axis="y", alpha=0.25)
     ax.legend(ncol=2, fontsize="small", loc="lower right")
     fig.tight_layout()
