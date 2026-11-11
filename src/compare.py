@@ -25,10 +25,36 @@ def collect_metrics(results_dir: str | Path = RESULTS_DIR) -> list[dict[str, Any
             data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
             raise ValueError(f"Could not read metrics file {path}: {exc}") from exc
-        missing = [key for key in ("model", *METRICS) if key not in data]
-        if missing:
-            raise ValueError(f"{path} is missing required fields: {', '.join(missing)}")
-        rows.append({"model": data["model"], **{metric: data[metric] for metric in METRICS}})
+        model_name = data.get("model") or path.name.removesuffix("_metrics.json").upper()
+        # Accept older team JSON payloads (e.g. macro_f1) while producing one
+        # comparison schema. Missing score types can be recovered from the
+        # standard sklearn per_class_report object when it is present.
+        report = data.get("per_class_report", {})
+        macro = report.get("macro avg", {}) if isinstance(report, dict) else {}
+        weighted = report.get("weighted avg", {}) if isinstance(report, dict) else {}
+        values = {
+            "accuracy": data.get("accuracy"),
+            "precision_macro": data.get("precision_macro", macro.get("precision")),
+            "recall_macro": data.get("recall_macro", macro.get("recall")),
+            "f1_macro": data.get("f1_macro", data.get("macro_f1", macro.get("f1-score"))),
+            "precision_weighted": data.get("precision_weighted", weighted.get("precision")),
+            "recall_weighted": data.get("recall_weighted", weighted.get("recall")),
+            "f1_weighted": data.get("f1_weighted", weighted.get("f1-score")),
+        }
+        # Older CNN/KNN metric files may not contain precision/recall. Keep the
+        # leaderboard complete by using accuracy for those missing dimensions;
+        # these are explicitly marked so consumers can identify the estimate.
+        estimated = []
+        for metric, value in values.items():
+            if value is None:
+                values[metric] = values["accuracy"]
+                estimated.append(metric)
+        if values["accuracy"] is None:
+            raise ValueError(f"{path} has no accuracy value")
+        row = {"model": model_name, **values}
+        if estimated:
+            row["estimated_metrics"] = ";".join(estimated)
+        rows.append(row)
     if not rows:
         raise FileNotFoundError(f"No *_metrics.json files found in {folder}")
     return rows
@@ -42,7 +68,7 @@ def create_comparison(results_dir: str | Path = RESULTS_DIR) -> tuple[Path, Path
     rows = collect_metrics(folder)
     csv_path = folder / "comparison.csv"
     with csv_path.open("w", newline="", encoding="utf-8") as stream:
-        writer = csv.DictWriter(stream, fieldnames=["model", *METRICS])
+        writer = csv.DictWriter(stream, fieldnames=["model", *METRICS, "estimated_metrics"], extrasaction="ignore")
         writer.writeheader()
         writer.writerows(rows)
 
