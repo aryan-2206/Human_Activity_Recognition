@@ -87,6 +87,30 @@ def evaluate_predictions(
     return result
 
 
+def evaluate_and_save(
+    name: str,
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    labels: list[Any] | None = None,
+    train_time_s: float | None = None,
+    infer_ms_per_sample: float | None = None,
+    output_path: str | Path | None = None,
+) -> dict[str, Any]:
+    """Team-contract helper: evaluate and save metrics including runtime measurements."""
+    if output_path is None:
+        output_path = RESULTS_DIR / f"{name.lower()}_metrics.json"
+    result = evaluate_predictions(name.upper(), y_true, y_pred, labels=labels, output_path=None)
+    if train_time_s is not None:
+        result["train_time_s"] = float(train_time_s)
+    if infer_ms_per_sample is not None:
+        result["infer_ms_per_sample"] = float(infer_ms_per_sample)
+    result = _json_value(result)
+    p = Path(output_path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+    return result
+
+
 def _load_array(name: str) -> np.ndarray:
     path = DATA_DIR / f"{name}.npy"
     if not path.is_file():
