@@ -1,0 +1,71 @@
+{
+  "model": "RF",
+  "accuracy": 0.838140481845945,
+  "precision_macro": 0.8365791397366816,
+  "recall_macro": 0.8367482105963129,
+  "f1_macro": 0.8359553111565164,
+  "precision_weighted": 0.8388959186371784,
+  "recall_weighted": 0.838140481845945,
+  "f1_weighted": 0.8377811743641804,
+  "labels": [
+    "WALKING",
+    "WALKING_UPSTAIRS",
+    "WALKING_DOWNSTAIRS",
+    "SITTING",
+    "STANDING",
+    "LAYING"
+  ],
+  "confusion_matrix": [
+    [
+      432,
+      24,
+      40,
+      0,
+      0,
+      0
+    ],
+    [
+      76,
+      367,
+      26,
+      2,
+      0,
+      0
+    ],
+    [
+      36,
+      27,
+      357,
+      0,
+      0,
+      0
+    ],
+    [
+      1,
+      24,
+      0,
+      381,
+      85,
+      0
+    ],
+    [
+      0,
+      13,
+      0,
+      123,
+      396,
+      0
+    ],
+    [
+      0,
+      0,
+      0,
+      0,
+      0,
+      537
+    ]
+  ],
+  "n_samples": 2947,
+  "train_time_s": 580.2785394999664,
+  "infer_ms_per_sample": 0.16705676953396456
+}\n

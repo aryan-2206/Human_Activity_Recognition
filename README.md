@@ -66,8 +66,10 @@ python src/compare.py
 ```
 
 This writes `results/comparison.csv` and `results/comparison_metrics.png`.
+The current comparison includes whichever model metrics files are present;
+rerun it after KNN and LSTM results arrive to refresh the full five-model table.
 The Dhairya report draft is in `reports/dhairya_section.md`; fill in measured
-test scores after training completes.
+test scores there if the training artifacts are regenerated with a different run.
 
 ## Large Files
 

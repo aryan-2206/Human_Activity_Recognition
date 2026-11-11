@@ -2,7 +2,7 @@
 
 ## SVM and Random Forest
 
-The classical baselines use the project’s subject-separated UCI HAR training and test split. Each 128-sample, six-channel window is flattened into a feature vector for scikit-learn. Hyperparameters are selected with three-fold stratified cross-validation on the training split only; the held-out test split is used once for final reporting. The SVM search compares linear and RBF kernels with `C` values 0.1, 1, and 10. The Random Forest uses 300 trees and searches `max_features` (`sqrt` or 0.5) and `min_samples_leaf` (1 or 2). The selected parameters and cross-validation accuracy are recorded in `results/{svm,rf}_best_params.json`.
+The classical baselines use the project’s subject-separated UCI HAR training and test split. Each 128-sample, six-channel window is flattened into a feature vector for scikit-learn. Hyperparameters are selected with three-fold subject-grouped cross-validation on the training split only; the held-out test split is used once for final reporting. The SVM search compares linear and RBF kernels with `C` values 0.1, 1, and 10. The Random Forest uses 300 trees and searches `max_features` (`sqrt` or 0.5) and `min_samples_leaf` (1 or 2). The selected settings and cross-validation accuracy are recorded in `results/{svm,rf}_best_params.json`.
 
 ## Shared evaluation and feature importance
 
@@ -12,4 +12,4 @@ Both models are saved under `models/` and scored through the same evaluator used
 
 Run `python src/evaluate.py --train-classical` after `src/data.py` has prepared the processed arrays. Then run `python src/compare.py` after the model metrics are available. The comparison script writes `results/comparison.csv` and `results/comparison_metrics.png` for the leaderboard.
 
-**Final test results:** SVM accuracy **[fill from `svm_metrics.json`]**, macro-F1 **[fill]**; Random Forest accuracy **[fill from `rf_metrics.json`]**, macro-F1 **[fill]**. The best cross-validation settings are recorded in each `*_best_params.json`. These result values are pending until the processed data is available and both training runs complete.
+**Final test results:** SVM accuracy **88.46%**, macro-F1 **0.883**; Random Forest accuracy **83.81%**, macro-F1 **0.836**. The SVM selected an RBF kernel with `C=10` (grouped CV accuracy 93.68%); the Random Forest selected `max_features=sqrt`, `min_samples_leaf=1` (grouped CV accuracy 95.61%). On this test split, SVM gave the stronger overall score, while RF inference was faster (about 0.17 ms/sample versus 22.55 ms/sample for SVM on this run). These measurements are specific to this machine and run.

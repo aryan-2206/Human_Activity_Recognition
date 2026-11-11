@@ -25,7 +25,7 @@ from sklearn.metrics import (
     recall_score,
 )
 from sklearn.preprocessing import LabelEncoder
-from sklearn.model_selection import GridSearchCV, StratifiedKFold
+from sklearn.model_selection import GridSearchCV, GroupKFold
 from sklearn.svm import SVC
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -153,14 +153,16 @@ def train_classical_models() -> dict[str, dict[str, Any]]:
         raise ValueError("Test labels contain classes absent from the training set") from exc
     class_names = encoder.classes_.tolist()
 
-    cv = StratifiedKFold(n_splits=3, shuffle=True, random_state=42)
+    groups_path = DATA_DIR / "subjects_train.npy"
+    groups = np.load(groups_path, allow_pickle=False) if groups_path.is_file() else None
+    cv = GroupKFold(n_splits=3) if groups is not None else 3
     searches = {
         "svm": (
             SVC(),
             {"C": [0.1, 1, 10], "kernel": ["linear", "rbf"]},
         ),
         "rf": (
-            RandomForestClassifier(n_estimators=300, random_state=42, n_jobs=-1),
+            RandomForestClassifier(n_estimators=300, random_state=42, n_jobs=1),
             {"max_features": ["sqrt", 0.5], "min_samples_leaf": [1, 2]},
         ),
     }
@@ -168,9 +170,10 @@ def train_classical_models() -> dict[str, dict[str, Any]]:
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     outputs = {}
     for name, (estimator, param_grid) in searches.items():
-        search = GridSearchCV(estimator, param_grid, cv=cv, scoring="accuracy", n_jobs=-1, refit=True)
+        model_cv = cv
+        search = GridSearchCV(estimator, param_grid, cv=model_cv, scoring="accuracy", n_jobs=1, refit=True, verbose=1)
         started = time.perf_counter()
-        search.fit(X_train, y_train_encoded)
+        search.fit(X_train, y_train_encoded, groups=groups)
         train_time_s = time.perf_counter() - started
         model = search.best_estimator_
         joblib.dump(model, MODEL_DIR / f"{name}.joblib")
