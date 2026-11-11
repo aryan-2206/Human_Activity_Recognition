@@ -1,0 +1,71 @@
+{
+  "model": "SVM",
+  "accuracy": 0.8846284356973193,
+  "precision_macro": 0.8835692324758427,
+  "recall_macro": 0.8840547654362494,
+  "f1_macro": 0.8829185268661863,
+  "precision_weighted": 0.886479766891241,
+  "recall_weighted": 0.8846284356973193,
+  "f1_weighted": 0.8847178828808824,
+  "labels": [
+    "WALKING",
+    "WALKING_UPSTAIRS",
+    "WALKING_DOWNSTAIRS",
+    "SITTING",
+    "STANDING",
+    "LAYING"
+  ],
+  "confusion_matrix": [
+    [
+      453,
+      2,
+      35,
+      1,
+      5,
+      0
+    ],
+    [
+      3,
+      414,
+      54,
+      0,
+      0,
+      0
+    ],
+    [
+      33,
+      6,
+      381,
+      0,
+      0,
+      0
+    ],
+    [
+      2,
+      22,
+      0,
+      379,
+      88,
+      0
+    ],
+    [
+      1,
+      7,
+      0,
+      64,
+      460,
+      0
+    ],
+    [
+      0,
+      17,
+      0,
+      0,
+      0,
+      520
+    ]
+  ],
+  "n_samples": 2947,
+  "train_time_s": 1192.8821628000587,
+  "infer_ms_per_sample": 22.550795249410875
+}

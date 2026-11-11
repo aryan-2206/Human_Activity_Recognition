@@ -52,11 +52,12 @@ Place `X_train.npy`, `X_test.npy`, `y_train.npy`, and `y_test.npy` in
 python src/evaluate.py --train-classical
 ```
 
-This trains the SVM and Random Forest, saves `models/svm.joblib` and
-`models/rf.joblib`, and writes `results/svm_metrics.json` and
-`results/rf_metrics.json`. Other model training scripts can import
-`evaluate_predictions` from `src.evaluate` and pass their model name, true
-labels, and predicted labels to create the same metrics JSON contract.
+This tunes and trains the SVM and Random Forest, saves `models/svm.joblib` and
+`models/rf.joblib`, and writes the matching metrics and best-parameter JSON
+files. Random Forest sensor-channel importances are saved in
+`results/rf_feature_importance.csv`. Other model training scripts can import
+`evaluate_predictions` or `evaluate_and_save` from `src.evaluate` to write the
+same metrics JSON contract.
 
 After the team metrics files are present, generate the comparison outputs:
 
@@ -65,6 +66,10 @@ python src/compare.py
 ```
 
 This writes `results/comparison.csv` and `results/comparison_metrics.png`.
+The current comparison includes whichever model metrics files are present;
+rerun it after KNN and LSTM results arrive to refresh the full five-model table.
+The Dhairya report draft is in `reports/dhairya_section.md`; fill in measured
+test scores there if the training artifacts are regenerated with a different run.
 
 ## Large Files
 

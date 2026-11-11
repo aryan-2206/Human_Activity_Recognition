@@ -14,6 +14,8 @@ from typing import Any
 
 import joblib
 import numpy as np
+import csv
+import time
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import (
     accuracy_score,
@@ -23,6 +25,7 @@ from sklearn.metrics import (
     recall_score,
 )
 from sklearn.preprocessing import LabelEncoder
+from sklearn.model_selection import GridSearchCV, GroupKFold
 from sklearn.svm import SVC
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -88,26 +91,40 @@ def evaluate_predictions(
 
 
 def evaluate_and_save(
-    name: str,
+    model_name: str,
     y_true: np.ndarray,
     y_pred: np.ndarray,
-    labels: list[Any] | None = None,
+    labels: list[Any],
     train_time_s: float | None = None,
     infer_ms_per_sample: float | None = None,
+    *,
     output_path: str | Path | None = None,
 ) -> dict[str, Any]:
-    """Team-contract helper: evaluate and save metrics including runtime measurements."""
-    if output_path is None:
-        output_path = RESULTS_DIR / f"{name.lower()}_metrics.json"
-    result = evaluate_predictions(name.upper(), y_true, y_pred, labels=labels, output_path=None)
+    """Compatibility entry point for team trainers, including ``train_knn``.
+
+    ``labels`` are display names ordered by encoded class ID (0..N-1), as in
+    ``data/label_names.json``. Timing fields are retained when provided.
+    """
+    true = np.asarray(y_true).reshape(-1)
+    pred = np.asarray(y_pred).reshape(-1)
+    result = evaluate_predictions(
+        model_name,
+        true,
+        pred,
+        labels=list(range(len(labels))),
+        output_path=None,
+    )
+    result["labels"] = _json_value(labels)
     if train_time_s is not None:
         result["train_time_s"] = float(train_time_s)
     if infer_ms_per_sample is not None:
         result["infer_ms_per_sample"] = float(infer_ms_per_sample)
-    result = _json_value(result)
-    p = Path(output_path)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+    if output_path is None:
+        slug = "".join(c.lower() if c.isalnum() else "_" for c in str(model_name)).strip("_")
+        output_path = RESULTS_DIR / f"{slug}_metrics.json"
+    path = Path(output_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     return result
 
 
@@ -136,27 +153,67 @@ def train_classical_models() -> dict[str, dict[str, Any]]:
         raise ValueError("Test labels contain classes absent from the training set") from exc
     class_names = encoder.classes_.tolist()
 
-    models = {
-        "svm": SVC(),
-        "rf": RandomForestClassifier(n_estimators=300, random_state=42, n_jobs=-1),
+    groups_path = DATA_DIR / "subjects_train.npy"
+    groups = np.load(groups_path, allow_pickle=False) if groups_path.is_file() else None
+    cv = GroupKFold(n_splits=3) if groups is not None else 3
+    searches = {
+        "svm": (
+            SVC(),
+            {"C": [0.1, 1, 10], "kernel": ["linear", "rbf"]},
+        ),
+        "rf": (
+            RandomForestClassifier(n_estimators=300, random_state=42, n_jobs=1),
+            {"max_features": ["sqrt", 0.5], "min_samples_leaf": [1, 2]},
+        ),
     }
     MODEL_DIR.mkdir(parents=True, exist_ok=True)
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     outputs = {}
-    for name, model in models.items():
-        model.fit(X_train, y_train_encoded)
+    for name, (estimator, param_grid) in searches.items():
+        model_cv = cv
+        search = GridSearchCV(estimator, param_grid, cv=model_cv, scoring="accuracy", n_jobs=1, refit=True, verbose=1)
+        started = time.perf_counter()
+        search.fit(X_train, y_train_encoded, groups=groups)
+        train_time_s = time.perf_counter() - started
+        model = search.best_estimator_
         joblib.dump(model, MODEL_DIR / f"{name}.joblib")
+        (RESULTS_DIR / f"{name}_best_params.json").write_text(
+            json.dumps({"best_params": search.best_params_, "best_cv_accuracy": float(search.best_score_)}, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        started = time.perf_counter()
         pred = model.predict(X_test)
+        infer_ms_per_sample = (time.perf_counter() - started) * 1000 / len(X_test)
         outputs[name] = evaluate_predictions(
             name.upper(), y_test_encoded, pred, labels=list(range(len(class_names))),
             output_path=RESULTS_DIR / f"{name}_metrics.json",
         )
         # Store original label names in metrics while keeping matrix order aligned.
         outputs[name]["labels"] = _json_value(class_names)
+        outputs[name]["train_time_s"] = float(train_time_s)
+        outputs[name]["infer_ms_per_sample"] = float(infer_ms_per_sample)
         (RESULTS_DIR / f"{name}_metrics.json").write_text(
             json.dumps(outputs[name], indent=2) + "\n", encoding="utf-8"
         )
         print(f"{name.upper()}: accuracy={outputs[name]['accuracy']:.4f}; saved model and metrics")
+        if name == "rf":
+            importance = model.feature_importances_
+            # Flattened window position features use feature order [timestep, channel].
+            # Summing over timesteps gives a readable six-sensor-channel ranking.
+            if X_test.ndim == 2 and X_train.shape[1] % 6 == 0:
+                channel_names = ["acc_x", "acc_y", "acc_z", "gyro_x", "gyro_y", "gyro_z"]
+                grouped = importance.reshape(-1, 6).sum(axis=0)
+                ranked = sorted(zip(channel_names, grouped.tolist()), key=lambda item: item[1], reverse=True)
+                importance_rows = [{"feature": n, "importance": float(v)} for n, v in ranked]
+            else:
+                importance_rows = [
+                    {"feature": f"feature_{i}", "importance": float(value)}
+                    for i, value in sorted(enumerate(importance), key=lambda item: item[1], reverse=True)[:30]
+                ]
+            with (RESULTS_DIR / "rf_feature_importance.csv").open("w", newline="", encoding="utf-8") as stream:
+                writer = csv.DictWriter(stream, fieldnames=["feature", "importance"])
+                writer.writeheader()
+                writer.writerows(importance_rows)
     return outputs
 
 

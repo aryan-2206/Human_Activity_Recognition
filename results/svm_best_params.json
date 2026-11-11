@@ -1,0 +1,7 @@
+{
+  "best_params": {
+    "C": 10,
+    "kernel": "rbf"
+  },
+  "best_cv_accuracy": 0.9367511802762721
+}
