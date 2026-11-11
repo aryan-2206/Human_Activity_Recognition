@@ -2,108 +2,148 @@
 src/predict.py  —  Aryan's deliverable
 Loads all five trained models and returns predictions for a given input.
 
-Usage (from project root):
+Called by Indraneel's app/app.py to run inference.
+
+Usage (smoke-test from project root):
     python src/predict.py
 
-Depends on:
-    - models/cnn.keras      (Aryan)
-    - models/lstm.keras     (Indraneel)
-    - models/svm.joblib     (Dhairya)
-    - models/rf.joblib      (Dhairya)
-    - models/knn.joblib     (Akhil)
-    - data/processed/X_test.npy and y_test.npy (Akhil)
+Input contract (from Akhil's data.py):
+    X shape: (N, 128, 6) — N windows, 128 timesteps, 6 inertial channels
+    Labels : 0-5 integers mapping to LABELS list below
+
+Output:
+    dict[model_name -> np.ndarray of int class predictions, shape (N,)]
 """
 
-import numpy as np
+from __future__ import annotations
+
 import os
+import time
+from pathlib import Path
 
-# ── Paths ──────────────────────────────────────────────────────────────────────
-MODEL_DIR = os.path.join(os.path.dirname(__file__), "..", "models")
-DATA_DIR  = os.path.join(os.path.dirname(__file__), "..", "data", "processed")
+import numpy as np
 
-CNN_PATH  = os.path.join(MODEL_DIR, "cnn.keras")
-LSTM_PATH = os.path.join(MODEL_DIR, "lstm.keras")
-SVM_PATH  = os.path.join(MODEL_DIR, "svm.joblib")
-RF_PATH   = os.path.join(MODEL_DIR, "rf.joblib")
-KNN_PATH  = os.path.join(MODEL_DIR, "knn.joblib")
+ROOT      = Path(__file__).resolve().parents[1]
+MODEL_DIR = ROOT / "models"
+DATA_DIR  = ROOT / "data" / "processed"
 
-# Activity labels — update once Akhil confirms the class names
-ACTIVITY_LABELS = [
-    "WALKING", "WALKING_UPSTAIRS", "WALKING_DOWNSTAIRS",
-    "SITTING", "STANDING", "LAYING"
-]
+LABELS = ["WALKING", "WALKING_UPSTAIRS", "WALKING_DOWNSTAIRS",
+          "SITTING", "STANDING", "LAYING"]
+
+# Model file paths
+_PATHS = {
+    "CNN":  MODEL_DIR / "cnn.keras",
+    "LSTM": MODEL_DIR / "lstm.keras",
+    "SVM":  MODEL_DIR / "svm.joblib",
+    "RF":   MODEL_DIR / "rf.joblib",
+    "KNN":  MODEL_DIR / "knn.joblib",
+}
 
 
-def load_models():
-    """Load all five trained models. Returns a dict keyed by model name."""
+def load_models(verbose: bool = True) -> dict:
+    """
+    Load all available trained models. Skips any whose file doesn't exist yet.
+    Returns a dict keyed by model name.
+    """
     import joblib
 
-    models = {}
+    models: dict = {}
 
-    if os.path.exists(CNN_PATH):
-        from tensorflow import keras
-        models["CNN"] = keras.models.load_model(CNN_PATH)
-        print("[predict] CNN loaded.")
-    else:
-        print(f"[predict] WARNING: CNN model not found at {CNN_PATH}")
-
-    if os.path.exists(LSTM_PATH):
-        from tensorflow import keras
-        models["LSTM"] = keras.models.load_model(LSTM_PATH)
-        print("[predict] LSTM loaded.")
-    else:
-        print(f"[predict] WARNING: LSTM model not found at {LSTM_PATH}")
-
-    for name, path in [("SVM", SVM_PATH), ("RF", RF_PATH), ("KNN", KNN_PATH)]:
-        if os.path.exists(path):
-            models[name] = joblib.load(path)
-            print(f"[predict] {name} loaded.")
+    # Deep learning models
+    for name in ("CNN", "LSTM"):
+        path = _PATHS[name]
+        if path.exists():
+            from tensorflow import keras
+            models[name] = keras.models.load_model(str(path))
+            if verbose:
+                print(f"[predict] {name} loaded ← {path.name}")
         else:
-            print(f"[predict] WARNING: {name} model not found at {path}")
+            if verbose:
+                print(f"[predict] {name} not found at {path} — skipping")
+
+    # Sklearn models
+    for name in ("SVM", "RF", "KNN"):
+        path = _PATHS[name]
+        if path.exists():
+            models[name] = joblib.load(path)
+            if verbose:
+                print(f"[predict] {name} loaded ← {path.name}")
+        else:
+            if verbose:
+                print(f"[predict] {name} not found at {path} — skipping")
 
     return models
 
 
-def predict_all(X: np.ndarray) -> dict:
+def predict_all(X: np.ndarray, verbose: bool = False) -> dict[str, np.ndarray]:
     """
-    Run all available models on X and return a dict of predictions.
+    Run all available models on X and return class predictions.
 
     Args:
-        X: numpy array of shape (n_samples, timesteps, features)
-           — the windowed/processed format Akhil produces.
+        X      : np.ndarray of shape (N, 128, 6) — the windowed inertial data
+                 produced by Akhil's data.py (already standardized).
+        verbose: print timing per model.
 
     Returns:
-        dict mapping model_name -> np.ndarray of integer class predictions
+        dict mapping model_name -> np.ndarray of int predictions, shape (N,)
+        Predictions are integer indices 0–5 matching LABELS.
     """
-    models = load_models()
-    predictions = {}
+    if X.ndim != 3 or X.shape[1:] != (128, 6):
+        raise ValueError(f"Expected X shape (N, 128, 6), got {X.shape}")
 
+    models = load_models(verbose=False)
+    if not models:
+        raise RuntimeError("No models found in models/. Train or download them first.")
+
+    # Flattened view for sklearn models: (N, 128*6=768)
+    X_flat = X.reshape(X.shape[0], -1)
+
+    predictions: dict[str, np.ndarray] = {}
     for name, model in models.items():
+        t0 = time.perf_counter()
         if name in ("CNN", "LSTM"):
-            # Deep learning models expect 3-D input (samples, timesteps, features)
-            raw = model.predict(X, verbose=0)
+            raw = model.predict(X, verbose=0)        # (N, 6) softmax
             predictions[name] = np.argmax(raw, axis=1)
         else:
-            # Sklearn models expect 2-D input (samples, features)
-            X_flat = X.reshape(X.shape[0], -1)
             predictions[name] = model.predict(X_flat)
+        elapsed_ms = (time.perf_counter() - t0) * 1000
+        if verbose:
+            print(f"[predict] {name}: {elapsed_ms:.1f}ms for {len(X)} samples")
 
     return predictions
 
 
-# ── Quick smoke-test ───────────────────────────────────────────────────────────
+def predict_single(window: np.ndarray) -> dict[str, int]:
+    """
+    Convenience wrapper: predict a single window (128, 6) with all models.
+    Returns dict[model_name -> int class index].
+    """
+    if window.shape != (128, 6):
+        raise ValueError(f"Expected single window shape (128, 6), got {window.shape}")
+    preds = predict_all(window[np.newaxis, ...])
+    return {name: int(p[0]) for name, p in preds.items()}
+
+
+def label_name(class_idx: int) -> str:
+    """Convert integer class index to human-readable activity label."""
+    return LABELS[class_idx]
+
+
+# ── Smoke-test ─────────────────────────────────────────────────────────────────
+
 if __name__ == "__main__":
-    X_test_path = os.path.join(DATA_DIR, "X_test.npy")
-    y_test_path = os.path.join(DATA_DIR, "y_test.npy")
+    x_path = DATA_DIR / "X_test.npy"
+    y_path = DATA_DIR / "y_test.npy"
 
-    if not os.path.exists(X_test_path):
-        print("X_test.npy not found — waiting on Akhil's processed data.")
+    if not x_path.exists():
+        print("[predict] X_test.npy not found — run Akhil's data.py first.")
     else:
-        X_test = np.load(X_test_path)
-        y_test = np.load(y_test_path)
-        print(f"Loaded test set: {X_test.shape}")
+        X_test = np.load(x_path)
+        y_test = np.load(y_path)
+        print(f"[predict] Test set: {X_test.shape}")
 
-        preds = predict_all(X_test)
-        for model_name, p in preds.items():
-            acc = (p == y_test).mean()
-            print(f"  {model_name}: accuracy = {acc:.4f}")
+        all_preds = predict_all(X_test, verbose=True)
+        print("\n── Results ──────────────────────────────")
+        for model_name, preds in all_preds.items():
+            acc = float((preds == y_test).mean())
+            print(f"  {model_name:5s}: accuracy = {acc:.4f}")
