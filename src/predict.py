@@ -17,6 +17,17 @@ Output:
 
 from __future__ import annotations
 
+# -- Runtime compatibility shim -- must precede tensorflow import ----------
+import sys
+from pathlib import Path as _Path
+
+_SRC_ROOT = _Path(__file__).resolve().parents[1]
+if str(_SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(_SRC_ROOT))
+
+import src.runtime_compat  # noqa: E402
+
+# -- Standard / third-party imports ----------------------------------------
 import os
 import time
 from pathlib import Path
@@ -56,7 +67,7 @@ def load_models(verbose: bool = True) -> dict:
             from tensorflow import keras
             models[name] = keras.models.load_model(str(path))
             if verbose:
-                print(f"[predict] {name} loaded ← {path.name}")
+                print(f"[predict] {name} loaded <- {path.name}")
         else:
             if verbose:
                 print(f"[predict] {name} not found at {path} — skipping")
@@ -67,7 +78,7 @@ def load_models(verbose: bool = True) -> dict:
         if path.exists():
             models[name] = joblib.load(path)
             if verbose:
-                print(f"[predict] {name} loaded ← {path.name}")
+                print(f"[predict] {name} loaded <- {path.name}")
         else:
             if verbose:
                 print(f"[predict] {name} not found at {path} — skipping")
@@ -95,8 +106,22 @@ def predict_all(X: np.ndarray, verbose: bool = False) -> dict[str, np.ndarray]:
     if not models:
         raise RuntimeError("No models found in models/. Train or download them first.")
 
-    # Flattened view for sklearn models: (N, 128*6=768)
+    # Flattened view for SVM/RF: (N, 128*6=768)
     X_flat = X.reshape(X.shape[0], -1)
+
+    # KNN uses 85 engineered features, not raw flat windows
+    _knn_features = None
+    if "KNN" in models:
+        try:
+            from src.features import extract_batch as _extract_batch
+            _knn_features = _extract_batch(X)
+        except Exception as _knn_feat_err:
+            import warnings
+            warnings.warn(
+                f"[predict] KNN feature extraction failed ({_knn_feat_err}); "
+                "falling back to flat features."
+            )
+            _knn_features = X_flat
 
     predictions: dict[str, np.ndarray] = {}
     for name, model in models.items():
@@ -104,7 +129,9 @@ def predict_all(X: np.ndarray, verbose: bool = False) -> dict[str, np.ndarray]:
         if name in ("CNN", "LSTM"):
             raw = model.predict(X, verbose=0)        # (N, 6) softmax
             predictions[name] = np.argmax(raw, axis=1)
-        else:
+        elif name == "KNN":
+            predictions[name] = model.predict(_knn_features)
+        else:  # SVM, RF
             predictions[name] = model.predict(X_flat)
         elapsed_ms = (time.perf_counter() - t0) * 1000
         if verbose:
