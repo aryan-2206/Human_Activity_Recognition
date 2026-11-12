@@ -1,7 +1,19 @@
-tensorflow==2.16.1
+# Supported locked runtime: use 64-bit CPython 3.12.x.
+# Keep TensorFlow/Keras aligned with the committed CNN and LSTM artifacts.
+tensorflow==2.21.0
+keras==3.13.2
+
+# Classical models use scikit-learn 1.4.2 serialized estimators.
 scikit-learn==1.4.2
+joblib==1.4.2
+
+# Shared data, feature extraction, and plotting stack.
 numpy==1.26.4
+scipy==1.13.1
 pandas==2.2.2
 matplotlib==3.9.0
 seaborn==0.13.2
-streamlit==1.35.0
+plotly==6.5.0
+
+# Streamlit front end.
+streamlit==1.67.0
