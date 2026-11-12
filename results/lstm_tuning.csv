@@ -1,0 +1,6 @@
+config,architecture,hidden_units,dropout_rate,bidirectional,validation_accuracy,validation_macro_f1,macro_f1_delta_vs_baseline,best_validation_loss,epochs_completed,train_time_s,selected,status
+baseline_u64_d03,LSTM,64,0.3,False,0.9361846571622539,0.9341597491609578,0.0,0.2011539787054062,7,12.097,False,completed
+unidirectional_u32_d03,LSTM,32,0.3,False,0.9470468431771895,0.9463311152107803,0.012171,0.17688138782978058,12,11.635,False,completed
+unidirectional_u64_d02,LSTM,64,0.2,False,0.9497623896809233,0.9496224638523362,0.015463,0.1872418373823166,8,9.836,False,completed
+unidirectional_u64_d05,LSTM,64,0.5,False,0.9524779361846571,0.9523475004295775,0.018188,0.18465746939182281,11,11.612,True,completed
+bidirectional_u32_d03,BiLSTM,32,0.3,True,0.9131025118805159,0.9117356759900179,-0.022424,0.2692679166793823,8,13.72,False,completed
