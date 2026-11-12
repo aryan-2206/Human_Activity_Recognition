@@ -19,13 +19,17 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
+# Keep TensorFlow lazy, but initialize it before importing src.data/sklearn.
+# On Windows, loading sklearn's native OpenMP runtime first can prevent
+# TensorFlow's DLL from initializing later in the same process.
+_TENSORFLOW_KERAS = None
+_TENSORFLOW_IMPORT_ERROR: Exception | None = None
+
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.data import LABELS as DATA_LABELS  # noqa: E402
-from src.data import prepare_data  # noqa: E402
-from src.predict import load_models  # noqa: E402
+from src.predict import LABELS as DATA_LABELS  # noqa: E402
 
 DATA_DIR = ROOT / "data" / "processed"
 MODEL_DIR = ROOT / "models"
@@ -75,9 +79,25 @@ st.set_page_config(
 )
 
 
+def _ensure_tensorflow_loaded() -> None:
+    """Load TensorFlow before src.data imports scikit-learn's native runtime."""
+    global _TENSORFLOW_KERAS, _TENSORFLOW_IMPORT_ERROR
+    if _TENSORFLOW_KERAS is not None or _TENSORFLOW_IMPORT_ERROR is not None:
+        return
+    try:
+        from tensorflow import keras as tensorflow_keras
+
+        _TENSORFLOW_KERAS = tensorflow_keras
+    except Exception as exc:  # Let classical models run if the native runtime is unavailable.
+        _TENSORFLOW_IMPORT_ERROR = exc
+
+
 @st.cache_data(show_spinner=False)
 def _load_test_data() -> tuple[np.ndarray, np.ndarray]:
     """Load (or prepare) the official UCI HAR test windows and labels."""
+    _ensure_tensorflow_loaded()
+    from src.data import prepare_data
+
     arrays = prepare_data()
     X_test = np.asarray(arrays[1], dtype=np.float32)
     y_test = np.asarray(arrays[3], dtype=np.int64).reshape(-1)
@@ -91,42 +111,67 @@ def _load_test_data() -> tuple[np.ndarray, np.ndarray]:
 @st.cache_resource(show_spinner=False)
 def _load_models_safely() -> tuple[dict[str, Any], str | None]:
     """Use Aryan's loader, then isolate failures so one artifact cannot block all models."""
-    try:
-        return load_models(verbose=False), None
-    except Exception as exc:  # Show runtime/version/model errors instead of crashing the app.
-        errors = [f"Unified loader: {type(exc).__name__}: {exc}"]
-        recovered: dict[str, Any] = {}
+    _ensure_tensorflow_loaded()
+    errors: list[str] = []
+
+    if _TENSORFLOW_KERAS is None:
+        import_error = _TENSORFLOW_IMPORT_ERROR or ImportError("TensorFlow is unavailable")
+        errors.append(f"TensorFlow runtime: {_short_error(import_error)}")
+    else:
         try:
-            import joblib
+            from src.predict import load_models
 
-            for name in MODEL_NAMES:
-                suffix = ".keras" if name in ("CNN", "LSTM") else ".joblib"
-                model_path = MODEL_DIR / f"{name.lower()}{suffix}"
-                if not model_path.is_file():
-                    continue
-                try:
-                    if name in ("CNN", "LSTM"):
-                        from tensorflow import keras
+            return load_models(verbose=False), None
+        except Exception as exc:  # Isolate model deserialization failures below.
+            errors.append(f"Unified loader: {_short_error(exc)}")
 
-                        recovered[name] = keras.models.load_model(str(model_path))
-                    else:
-                        recovered[name] = joblib.load(model_path)
-                except Exception as model_error:
-                    if name == "LSTM":
-                        try:
-                            recovered[name] = _load_lstm_from_weights(model_path)
-                        except Exception as weights_error:
-                            errors.append(
-                                "LSTM whole-model load: "
-                                f"{type(model_error).__name__}: {model_error}; "
-                                "weights-only fallback: "
-                                f"{type(weights_error).__name__}: {weights_error}"
-                            )
-                    else:
-                        errors.append(f"{name}: {type(model_error).__name__}: {model_error}")
-        except Exception as recovery_error:
-            errors.append(f"Per-model recovery: {type(recovery_error).__name__}: {recovery_error}")
-        return recovered, " | ".join(errors)
+    recovered: dict[str, Any] = {}
+    try:
+        import joblib
+
+        for name in MODEL_NAMES:
+            suffix = ".keras" if name in ("CNN", "LSTM") else ".joblib"
+            model_path = MODEL_DIR / f"{name.lower()}{suffix}"
+            if not model_path.is_file():
+                continue
+            if name in ("CNN", "LSTM") and _TENSORFLOW_KERAS is None:
+                continue
+            try:
+                if name in ("CNN", "LSTM"):
+                    recovered[name] = _TENSORFLOW_KERAS.models.load_model(str(model_path))
+                else:
+                    recovered[name] = joblib.load(model_path)
+            except Exception as model_error:
+                if name == "LSTM":
+                    try:
+                        recovered[name] = _load_lstm_from_weights(model_path)
+                    except Exception as weights_error:
+                        errors.append(
+                            "LSTM whole-model load: "
+                            f"{_short_error(model_error)}; weights-only fallback: "
+                            f"{_short_error(weights_error)}"
+                        )
+                else:
+                    errors.append(f"{name}: {_short_error(model_error)}")
+    except Exception as recovery_error:
+        errors.append(f"Per-model recovery: {_short_error(recovery_error)}")
+    return recovered, " | ".join(errors) if errors else None
+
+
+def _short_error(exc: Exception) -> str:
+    """Keep native runtime diagnostics readable in the Streamlit UI."""
+    lines = [line.strip() for line in str(exc).splitlines() if line.strip()]
+    detail = next((line for line in lines if "DLL load failed" in line), None)
+    if detail is None:
+        detail = next(
+            (
+                line
+                for line in lines
+                if not line.startswith(("Traceback", "File ", "During handling"))
+            ),
+            "model loading failed",
+        )
+    return f"{type(exc).__name__}: {detail}"
 
 
 def _load_lstm_from_weights(model_path: Path) -> Any:
