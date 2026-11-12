@@ -118,7 +118,7 @@ def _load_models_safely() -> tuple[dict[str, Any], str | None]:
                     if name in ("CNN", "LSTM"):
                         from tensorflow import keras
 
-                        recovered[name] = keras.models.load_model(str(model_path))
+                        recovered[name] = keras.models.load_model(str(model_path), compile=False)
                     else:
                         recovered[name] = joblib.load(model_path)
                 except Exception as model_error:

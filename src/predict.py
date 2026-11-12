@@ -65,7 +65,7 @@ def load_models(verbose: bool = True) -> dict:
         path = _PATHS[name]
         if path.exists():
             from tensorflow import keras
-            models[name] = keras.models.load_model(str(path))
+            models[name] = keras.models.load_model(str(path), compile=False)
             if verbose:
                 print(f"[predict] {name} loaded <- {path.name}")
         else:
