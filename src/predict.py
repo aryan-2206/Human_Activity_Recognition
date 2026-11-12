@@ -115,6 +115,11 @@ def predict_all(X: np.ndarray, verbose: bool = False) -> dict[str, np.ndarray]:
         try:
             from src.features import extract_batch as _extract_batch
             _knn_features = _extract_batch(X)
+            scaler_path = DATA_DIR / "feature_scaler.joblib"
+            if scaler_path.exists():
+                import joblib
+                _scaler = joblib.load(scaler_path)
+                _knn_features = _scaler.transform(_knn_features).astype(np.float32)
         except Exception as _knn_feat_err:
             import warnings
             warnings.warn(

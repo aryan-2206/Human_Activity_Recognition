@@ -154,3 +154,28 @@ def test_svm_accuracy_above_threshold(all_models, full_test_data):
     preds = all_models["SVM"].predict(X.reshape(len(X), -1))
     acc = (preds == y).mean()
     assert acc > 0.80, f"SVM accuracy {acc:.3f} is below expected 80%"
+
+
+def test_rf_accuracy_above_threshold(all_models, full_test_data):
+    X, y = full_test_data
+    preds = all_models["RF"].predict(X.reshape(len(X), -1))
+    acc = (preds == y).mean()
+    assert acc > 0.80, f"RF accuracy {acc:.3f} is below expected 80%"
+
+
+def test_knn_accuracy_above_threshold(all_models, full_test_data):
+    from src.predict import predict_all
+    X, y = full_test_data
+    preds = predict_all(X)["KNN"]
+    acc = (preds == y).mean()
+    assert acc > 0.80, f"KNN accuracy {acc:.3f} is below expected 80%"
+
+
+def test_predict_single_sample(all_models, sample_windows):
+    from src.predict import predict_single, label_name
+    X, _ = sample_windows
+    single_preds = predict_single(X[0])
+    assert set(single_preds.keys()) == {"CNN", "LSTM", "SVM", "RF", "KNN"}
+    for model_name, class_idx in single_preds.items():
+        assert 0 <= class_idx <= 5
+        assert isinstance(label_name(class_idx), str)

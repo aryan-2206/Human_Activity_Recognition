@@ -1,5 +1,11 @@
 """Generate UCI HAR exploratory plots from processed (channel-normalized) signals."""
+import sys
 from pathlib import Path
+
+_ROOT = Path(__file__).resolve().parents[1]
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
 import json
 import numpy as np
 import matplotlib
