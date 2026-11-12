@@ -5,23 +5,33 @@ Run from the repository root with ``streamlit run app/app.py``.
 
 from __future__ import annotations
 
+# -- Runtime compatibility shim -- MUST be the very first import ----------
+# Patches google.protobuf.runtime_version (missing in protobuf<5) and
+# pre-initialises TensorFlow's native DLL before OpenMP/OpenBLAS
+# (loaded by NumPy/SciPy/Scikit-learn) can lock the Windows C-runtime.
+import sys
+from pathlib import Path
+
+_APP_ROOT = Path(__file__).resolve().parents[1]
+if str(_APP_ROOT) not in sys.path:
+    sys.path.insert(0, str(_APP_ROOT))
+
+import src.runtime_compat  # noqa: E402  -- shim fires before any heavy import
+
+# -- Standard / third-party imports ----------------------------------------
 import hashlib
 import io
 import json
 import re
-import sys
 import time
 import csv
-from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pandas as pd
 import streamlit as st
 
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+ROOT = _APP_ROOT
 
 from src.data import LABELS as DATA_LABELS  # noqa: E402
 from src.data import prepare_data  # noqa: E402
