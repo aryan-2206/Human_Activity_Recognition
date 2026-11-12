@@ -11,6 +11,7 @@ import json
 import re
 import sys
 import time
+import csv
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +33,8 @@ RESULTS_DIR = ROOT / "results"
 WINDOW_SHAPE = (128, 6)
 SAMPLE_RATE_HZ = 50
 MODEL_NAMES = ("CNN", "LSTM", "SVM", "RF", "KNN")
+PLOTLY_TEMPLATE = "plotly_dark"
+PLOTLY_COLORS = ("#4CC9F0", "#F72585", "#FFC857", "#80ED99", "#B388EB", "#FF9F1C")
 CHANNEL_NAMES = (
     "total_acc_x",
     "total_acc_y",
@@ -109,10 +112,52 @@ def _load_models_safely() -> tuple[dict[str, Any], str | None]:
                     else:
                         recovered[name] = joblib.load(model_path)
                 except Exception as model_error:
-                    errors.append(f"{name}: {type(model_error).__name__}: {model_error}")
+                    if name == "LSTM":
+                        try:
+                            recovered[name] = _load_lstm_from_weights(model_path)
+                        except Exception as weights_error:
+                            errors.append(
+                                "LSTM whole-model load: "
+                                f"{type(model_error).__name__}: {model_error}; "
+                                "weights-only fallback: "
+                                f"{type(weights_error).__name__}: {weights_error}"
+                            )
+                    else:
+                        errors.append(f"{name}: {type(model_error).__name__}: {model_error}")
         except Exception as recovery_error:
             errors.append(f"Per-model recovery: {type(recovery_error).__name__}: {recovery_error}")
         return recovered, " | ".join(errors)
+
+
+def _load_lstm_from_weights(model_path: Path) -> Any:
+    """Rebuild Indraneel's selected architecture and load weights from .keras.
+
+    This path avoids deserializing newer Keras layer config fields (for example
+    ``quantization_config``) when the local Keras minor version is older than
+    the Colab version that saved the model.
+    """
+    from src.train_lstm import build_lstm
+
+    units, dropout, bidirectional = 64, 0.3, False
+    tuning_path = RESULTS_DIR / "lstm_tuning.csv"
+    if tuning_path.is_file():
+        with tuning_path.open(newline="", encoding="utf-8") as stream:
+            for row in csv.DictReader(stream):
+                if str(row.get("selected", "")).strip().lower() == "true":
+                    units = int(row["hidden_units"])
+                    dropout = float(row["dropout_rate"])
+                    bidirectional = str(row.get("bidirectional", "false")).strip().lower() == "true"
+                    break
+
+    model = build_lstm(
+        input_shape=WINDOW_SHAPE,
+        num_classes=len(DATA_LABELS),
+        hidden_units=units,
+        dropout_rate=dropout,
+        bidirectional=bidirectional,
+    )
+    model.load_weights(str(model_path))
+    return model
 
 
 @st.cache_resource(show_spinner=False)
@@ -126,6 +171,32 @@ def _load_channel_scaler() -> Any:
     import joblib
 
     return joblib.load(scaler_path)
+
+
+@st.cache_resource(show_spinner=False)
+def _load_knn_feature_scaler() -> Any:
+    """Load Akhil's train-fitted feature scaler, generating it if absent locally."""
+    scaler_path = DATA_DIR / "feature_scaler.joblib"
+    if not scaler_path.is_file():
+        _load_test_data()
+        from src.features import main as prepare_feature_artifacts
+
+        prepare_feature_artifacts()
+    if not scaler_path.is_file():
+        raise FileNotFoundError(f"The KNN feature scaler was not created at {scaler_path}.")
+    import joblib
+
+    return joblib.load(scaler_path)
+
+
+@st.cache_data(show_spinner="Preparing a sample sensor CSV...")
+def _sample_csv_bytes() -> bytes:
+    """Return one real UCI HAR window in the raw CSV format accepted by the app."""
+    X_test, _ = _load_test_data()
+    scaler = _load_channel_scaler()
+    raw_window = scaler.inverse_transform(X_test[0].reshape(-1, 6)).reshape(WINDOW_SHAPE)
+    sample = pd.DataFrame(raw_window, columns=CHANNEL_NAMES)
+    return sample.to_csv(index=False, float_format="%.8f").encode("utf-8")
 
 
 def _activity_name(index: int) -> str:
@@ -172,6 +243,25 @@ def _softmax(scores: np.ndarray) -> np.ndarray:
     return np.divide(values, totals, out=np.full_like(values, 1.0 / values.shape[1]), where=totals > 0)
 
 
+def _model_input_matrix(model_name: str, batch: np.ndarray, model: Any | None = None) -> np.ndarray:
+    """Adapt standardized windows to each sklearn model's trained feature shape."""
+    if model_name == "KNN":
+        from src.features import extract_batch
+
+        raw_features = extract_batch(batch)
+        inputs = _load_knn_feature_scaler().transform(raw_features).astype(np.float32)
+    else:
+        inputs = batch.reshape(batch.shape[0], -1)
+
+    expected_features = getattr(model, "n_features_in_", None)
+    if expected_features is not None and inputs.shape[1] != int(expected_features):
+        raise ValueError(
+            f"{model_name} model expects {int(expected_features)} features, "
+            f"but the app prepared {inputs.shape[1]}."
+        )
+    return inputs
+
+
 def _probability_matrix(
     model_name: str,
     model: Any,
@@ -195,22 +285,34 @@ def _probability_matrix(
         method = "Neural-network softmax output"
         is_probability = True
     else:
-        flattened = batch.reshape(batch.shape[0], -1)
+        model_inputs = _model_input_matrix(model_name, batch, model)
         classes = getattr(model, "classes_", None)
         if hasattr(model, "predict_proba"):
-            raw = np.asarray(model.predict_proba(flattened), dtype=np.float64)
-            probabilities = _align_class_columns(raw, classes)
-            method = "Classifier predict_proba output"
-            is_probability = True
+            try:
+                raw = np.asarray(model.predict_proba(model_inputs), dtype=np.float64)
+                probabilities = _align_class_columns(raw, classes)
+                method = "Classifier predict_proba output"
+                is_probability = True
+            except (AttributeError, NotImplementedError) as exc:
+                # SVC exposes predict_proba as a method even when it was fitted
+                # with probability=False; in that case sklearn raises here.
+                if not hasattr(model, "decision_function"):
+                    raise exc
+                raw = np.asarray(model.decision_function(model_inputs), dtype=np.float64)
+                if raw.ndim == 1 and classes is not None and len(classes) == 2:
+                    raw = np.column_stack((-raw, raw))
+                probabilities = _align_class_columns(raw, classes)
+                method = "Estimated from decision scores; not calibrated probabilities (SVC probability=False)"
+                is_probability = False
         elif hasattr(model, "decision_function"):
-            raw = np.asarray(model.decision_function(flattened), dtype=np.float64)
+            raw = np.asarray(model.decision_function(model_inputs), dtype=np.float64)
             if raw.ndim == 1 and classes is not None and len(classes) == 2:
                 raw = np.column_stack((-raw, raw))
             probabilities = _align_class_columns(raw, classes)
             method = "Estimated from decision scores; not calibrated probabilities"
             is_probability = False
         else:
-            raw_labels = np.asarray(model.predict(flattened)).reshape(-1)
+            raw_labels = np.asarray(model.predict(model_inputs)).reshape(-1)
             probabilities = np.zeros((batch.shape[0], len(DATA_LABELS)), dtype=np.float64)
             for row, label in enumerate(raw_labels):
                 index = _class_index(label)
@@ -242,12 +344,13 @@ def _class_predictions(
     probabilities: np.ndarray,
 ) -> np.ndarray:
     """Use the estimator's class prediction, even when its scores are approximate."""
-    if model_name in ("CNN", "LSTM"):
+    if model_name in ("CNN", "LSTM", "KNN"):
         return np.argmax(probabilities, axis=1).astype(np.int64)
     batch = np.asarray(windows)
     if batch.ndim == 2:
         batch = batch[np.newaxis, ...]
-    raw_labels = np.asarray(model.predict(batch.reshape(batch.shape[0], -1))).reshape(-1)
+    model_inputs = _model_input_matrix(model_name, batch, model)
+    raw_labels = np.asarray(model.predict(model_inputs)).reshape(-1)
     indices = [_class_index(value) for value in raw_labels]
     return np.asarray(
         [index if index is not None else int(np.argmax(probabilities[row])) for row, index in enumerate(indices)],
@@ -373,7 +476,13 @@ def _render_signal_plots(window: np.ndarray) -> None:
     with left:
         st.subheader("Accelerometer")
         if px is not None:
-            fig = px.line(frame, x="Time (seconds)", y=list(CHANNEL_LABELS[:3]))
+            fig = px.line(
+                frame,
+                x="Time (seconds)",
+                y=list(CHANNEL_LABELS[:3]),
+                template=PLOTLY_TEMPLATE,
+                color_discrete_sequence=PLOTLY_COLORS,
+            )
             fig.update_layout(legend_title_text="Axis", height=340, margin=dict(l=10, r=10, t=25, b=10))
             st.plotly_chart(fig, use_container_width=True)
         else:
@@ -381,7 +490,13 @@ def _render_signal_plots(window: np.ndarray) -> None:
     with right:
         st.subheader("Gyroscope")
         if px is not None:
-            fig = px.line(frame, x="Time (seconds)", y=list(CHANNEL_LABELS[3:]))
+            fig = px.line(
+                frame,
+                x="Time (seconds)",
+                y=list(CHANNEL_LABELS[3:]),
+                template=PLOTLY_TEMPLATE,
+                color_discrete_sequence=PLOTLY_COLORS,
+            )
             fig.update_layout(legend_title_text="Axis", height=340, margin=dict(l=10, r=10, t=25, b=10))
             st.plotly_chart(fig, use_container_width=True)
         else:
@@ -393,15 +508,56 @@ def _render_probability_chart(probabilities: np.ndarray) -> None:
         {"Activity": list(DATA_LABELS), "Probability": np.asarray(probabilities, dtype=float)}
     ).sort_values("Probability", ascending=True)
     if px is not None:
-        fig = px.bar(chart_data, x="Probability", y="Activity", orientation="h", range_x=[0, 1])
+        fig = px.bar(
+            chart_data,
+            x="Probability",
+            y="Activity",
+            orientation="h",
+            range_x=[0, 1],
+            template=PLOTLY_TEMPLATE,
+            color_discrete_sequence=PLOTLY_COLORS,
+        )
         fig.update_layout(height=330, margin=dict(l=10, r=10, t=20, b=10), yaxis_title=None)
         st.plotly_chart(fig, use_container_width=True)
     else:
         st.bar_chart(chart_data.set_index("Activity"), height=330)
 
 
+def _compare_models_on_window(window: np.ndarray) -> list[dict[str, Any]]:
+    """Build a side-by-side result table for all five model choices."""
+    display_names = {"RF": "Random Forest"}
+    rows: list[dict[str, Any]] = []
+    for model_name in MODEL_NAMES:
+        try:
+            probabilities, predicted_index, latency_ms, method, dummy_message = _predict_one(
+                model_name, window
+            )
+            rows.append(
+                {
+                    "Model": display_names.get(model_name, model_name),
+                    "Predicted activity": _activity_name(predicted_index).replace("_", " ").title(),
+                    "Predicted-class score": f"{float(probabilities[predicted_index]):.1%}",
+                    "Latency (ms)": round(latency_ms, 2),
+                    "Score source": method,
+                    "Status": "Demo fallback" if dummy_message else "Ready",
+                }
+            )
+        except Exception as exc:
+            rows.append(
+                {
+                    "Model": display_names.get(model_name, model_name),
+                    "Predicted activity": "—",
+                    "Predicted-class score": "—",
+                    "Latency (ms)": None,
+                    "Score source": "—",
+                    "Status": f"Error: {exc}",
+                }
+            )
+    return rows
+
+
 def _page_overview() -> None:
-    st.title("Human Activity Recognition")
+    st.header("Overview")
     st.write(
         "This project compares five machine-learning models that classify short "
         "accelerometer and gyroscope windows from the UCI HAR smartphone dataset. "
@@ -423,7 +579,7 @@ def _page_overview() -> None:
 
 
 def _page_live_demo() -> None:
-    st.title("Live Demo")
+    st.header("Live Demo")
     selected_model = st.selectbox("Choose a model", MODEL_NAMES, key="live_model")
     source = st.radio(
         "Choose an input",
@@ -434,6 +590,7 @@ def _page_live_demo() -> None:
 
     true_label: str | None = None
     sample_note: str | None = None
+    comparison_input_key: str
     if source == "Random test window":
         try:
             with st.spinner("Preparing the UCI HAR test split if needed..."):
@@ -450,7 +607,20 @@ def _page_live_demo() -> None:
         display_window = model_window
         true_label = _activity_name(int(y_test[sample_index]))
         sample_note = f"UCI HAR test window {sample_index + 1} of {len(X_test)}."
+        comparison_input_key = f"test-window:{sample_index}"
     else:
+        try:
+            sample_csv = _sample_csv_bytes()
+            st.download_button(
+                "Download sample sensor CSV",
+                data=sample_csv,
+                file_name="sample_har_sensor_window.csv",
+                mime="text/csv",
+                help="A 128-row UCI HAR window in the accepted six-channel CSV format.",
+                key="download_sample_sensor_csv",
+            )
+        except Exception as exc:
+            st.warning(f"Could not prepare the sample CSV right now: {exc}")
         uploaded = st.file_uploader("Upload a CSV with six sensor columns", type=("csv",))
         st.caption(
             "Accepted headers include total_acc_x/y/z and body_gyro_x/y/z, "
@@ -460,10 +630,17 @@ def _page_live_demo() -> None:
             st.info("Upload at least 128 rows to run a prediction.")
             return
         try:
-            display_window, model_window, sample_note = _read_uploaded_window(uploaded.getvalue())
+            file_bytes = uploaded.getvalue()
+            display_window, model_window, sample_note = _read_uploaded_window(file_bytes)
+            comparison_input_key = f"uploaded-csv:{hashlib.sha256(file_bytes).hexdigest()}"
         except Exception as exc:
             st.error(f"Invalid sensor CSV: {exc}")
+            st.caption("Use exactly six numeric sensor columns and at least 128 data rows.")
             return
+
+    if st.session_state.get("all_model_comparison_input") != comparison_input_key:
+        st.session_state.all_model_comparison_input = comparison_input_key
+        st.session_state.pop("all_model_comparison_rows", None)
 
     if sample_note:
         st.caption(sample_note)
@@ -472,9 +649,10 @@ def _page_live_demo() -> None:
     _render_signal_plots(display_window)
 
     try:
-        probabilities, predicted_index, latency_ms, probability_method, dummy_message = _predict_one(
-            selected_model, model_window
-        )
+        with st.spinner(f"Running {selected_model} prediction..."):
+            probabilities, predicted_index, latency_ms, probability_method, dummy_message = _predict_one(
+                selected_model, model_window
+            )
     except Exception as exc:
         st.error(f"Prediction failed for {selected_model}: {exc}")
         return
@@ -496,6 +674,21 @@ def _page_live_demo() -> None:
             st.metric("True activity", f"{ACTIVITY_EMOJI.get(true_label, '📍')} {true_label.replace('_', ' ').title()}")
         confidence = float(probabilities[predicted_index])
         st.metric("Predicted-class score", f"{confidence:.1%}")
+    st.subheader("Compare all five models on this window")
+    if st.button("Compare all 5 models", key="compare_all_models"):
+        with st.spinner("Running all five models on the same sensor window..."):
+            st.session_state.all_model_comparison_rows = _compare_models_on_window(model_window)
+            st.session_state.all_model_comparison_input = comparison_input_key
+    if (
+        st.session_state.get("all_model_comparison_input") == comparison_input_key
+        and st.session_state.get("all_model_comparison_rows")
+    ):
+        comparison_rows = st.session_state.all_model_comparison_rows
+        st.dataframe(pd.DataFrame(comparison_rows), hide_index=True, use_container_width=True)
+        if any(row["Status"] == "Demo fallback" for row in comparison_rows):
+            st.warning("Rows marked Demo fallback are placeholder outputs, not model predictions.")
+        if any(str(row["Status"]).startswith("Error:") for row in comparison_rows):
+            st.warning("One or more models could not run; see that model's status in the table.")
     st.subheader("Activity scores")
     _render_probability_chart(probabilities)
     st.caption(f"Score source: {probability_method}.")
@@ -526,7 +719,15 @@ def _set_stream_playing(value: bool) -> None:
 
 
 def _reset_stream() -> None:
-    st.session_state.stream_index = 0
+    st.session_state.stream_index = int(st.session_state.get("stream_start_index", 0))
+    st.session_state.stream_playing = False
+
+
+def _randomize_stream_start() -> None:
+    total = max(1, int(st.session_state.get("stream_total", 1)))
+    start_index = int(np.random.default_rng().integers(total))
+    st.session_state.stream_start_index = start_index
+    st.session_state.stream_index = start_index
     st.session_state.stream_playing = False
 
 
@@ -534,13 +735,20 @@ def _step_stream(amount: int) -> None:
     st.session_state.stream_index = max(0, int(st.session_state.get("stream_index", 0)) + amount)
 
 
-def _render_stream_timeline(predicted: np.ndarray, truth: np.ndarray, current_index: int) -> None:
-    indices = np.arange(current_index + 1)
+def _render_stream_timeline(
+    predicted: np.ndarray,
+    truth: np.ndarray,
+    current_index: int,
+    start_index: int,
+    history_size: int = 100,
+) -> None:
+    first_index = max(start_index, current_index - history_size + 1)
+    indices = np.arange(first_index, current_index + 1)
     frame = pd.DataFrame(
         {
-            "Window": indices,
-            "True activity": truth[: current_index + 1],
-            "Predicted activity": predicted[: current_index + 1],
+            "Window": indices + 1,
+            "True activity": truth[indices],
+            "Predicted activity": predicted[indices],
         }
     )
     if go is not None:
@@ -549,29 +757,40 @@ def _render_stream_timeline(predicted: np.ndarray, truth: np.ndarray, current_in
             go.Scatter(
                 x=frame["Window"], y=frame["True activity"], name="True",
                 mode="lines+markers", line_shape="hv",
+                line={"color": PLOTLY_COLORS[0], "width": 4},
+                marker={"symbol": "circle", "size": 8},
             )
         )
         fig.add_trace(
             go.Scatter(
                 x=frame["Window"], y=frame["Predicted activity"], name="Predicted",
                 mode="lines+markers", line_shape="hv",
+                line={"color": PLOTLY_COLORS[1], "width": 2, "dash": "dash"},
+                marker={"symbol": "x", "size": 9},
             )
         )
-        fig.update_yaxes(tickmode="array", tickvals=list(range(len(DATA_LABELS))), ticktext=list(DATA_LABELS))
+        fig.update_yaxes(
+            tickmode="array",
+            tickvals=list(range(len(DATA_LABELS))),
+            ticktext=list(DATA_LABELS),
+            range=[-0.5, len(DATA_LABELS) - 0.5],
+        )
         fig.update_layout(
-            xaxis_title="Consecutive test window",
+            xaxis_title="Test window",
             yaxis_title="Activity",
+            template=PLOTLY_TEMPLATE,
+            colorway=list(PLOTLY_COLORS),
             height=400,
             margin=dict(l=10, r=10, t=20, b=10),
         )
         st.plotly_chart(fig, use_container_width=True)
     else:
         st.line_chart(frame.set_index("Window"), height=400)
-        st.caption("Timeline y-values are zero-based activity indices in the order shown above.")
+        st.caption(f"Timeline shows up to the latest {history_size} windows; y-values use the shared activity order.")
 
 
 def _page_stream_simulation() -> None:
-    st.title("Stream Simulation")
+    st.header("Stream Simulation")
     st.write("Play consecutive official test windows and compare predicted activities with their true labels.")
     selected_model = st.selectbox("Model for the stream", MODEL_NAMES, key="stream_model")
     speed = st.slider("Playback interval (seconds per window)", 0.2, 2.0, 0.8, 0.1)
@@ -589,16 +808,21 @@ def _page_stream_simulation() -> None:
         st.error("The test split is empty.")
         return
 
+    st.session_state.stream_total = len(predicted)
     if "stream_index" not in st.session_state:
-        st.session_state.stream_index = 0
+        st.session_state.stream_index = int(np.random.default_rng().integers(len(predicted)))
+    if "stream_start_index" not in st.session_state:
+        st.session_state.stream_start_index = int(st.session_state.stream_index)
     if "stream_playing" not in st.session_state:
         st.session_state.stream_playing = False
     current_index = min(int(st.session_state.stream_index), len(predicted) - 1)
     st.session_state.stream_index = current_index
+    start_index = min(int(st.session_state.stream_start_index), current_index)
+    st.session_state.stream_start_index = start_index
     if current_index >= len(predicted) - 1:
         st.session_state.stream_playing = False
 
-    controls = st.columns(4)
+    controls = st.columns(5)
     with controls[0]:
         st.button(
             "⏸ Pause" if st.session_state.stream_playing else "▶ Play",
@@ -609,14 +833,16 @@ def _page_stream_simulation() -> None:
     with controls[1]:
         st.button("⟲ Reset", on_click=_reset_stream, use_container_width=True)
     with controls[2]:
+        st.button("Random start", on_click=_randomize_stream_start, use_container_width=True)
+    with controls[3]:
         st.button(
             "◀ Previous",
             on_click=_step_stream,
             args=(-1,),
-            disabled=st.session_state.stream_playing or current_index == 0,
+            disabled=st.session_state.stream_playing or current_index <= start_index,
             use_container_width=True,
         )
-    with controls[3]:
+    with controls[4]:
         st.button(
             "Next ▶",
             on_click=_step_stream,
@@ -633,7 +859,7 @@ def _page_stream_simulation() -> None:
     metrics[2].metric("Predicted activity", f"{ACTIVITY_EMOJI.get(predicted_name, '📍')} {predicted_name.replace('_', ' ').title()}")
     st.caption(f"Average inference time: {latency_ms:.2f} ms/window · score source: {probability_method}.")
     st.subheader("Prediction timeline")
-    _render_stream_timeline(predicted, truth, current_index)
+    _render_stream_timeline(predicted, truth, current_index, start_index)
 
     if st.session_state.stream_playing and current_index < len(predicted) - 1:
         time.sleep(float(speed))
@@ -700,7 +926,7 @@ def _read_comparison_data() -> tuple[pd.DataFrame, dict[str, dict[str, Any]], se
 
 
 def _page_model_comparison() -> None:
-    st.title("Model Comparison")
+    st.header("Model Comparison")
     st.write("Metrics come from the shared comparison CSV and each model's metrics JSON.")
     table, model_metrics, csv_models = _read_comparison_data()
     if table.empty:
@@ -748,7 +974,16 @@ def _page_model_comparison() -> None:
     score_data = score_data.melt(id_vars="model", var_name="Metric", value_name="Score").dropna()
     st.subheader("Accuracy and macro-F1")
     if px is not None and not score_data.empty:
-        fig = px.bar(score_data, x="model", y="Score", color="Metric", barmode="group", range_y=[0, 1])
+        fig = px.bar(
+            score_data,
+            x="model",
+            y="Score",
+            color="Metric",
+            barmode="group",
+            range_y=[0, 1],
+            template=PLOTLY_TEMPLATE,
+            color_discrete_sequence=PLOTLY_COLORS,
+        )
         fig.update_layout(height=370, margin=dict(l=10, r=10, t=20, b=10), xaxis_title="Model")
         st.plotly_chart(fig, use_container_width=True)
     elif not score_data.empty:
@@ -796,6 +1031,7 @@ def _page_model_comparison() -> None:
         fig.update_layout(
             xaxis_title="Predicted activity",
             yaxis_title="True activity",
+            template=PLOTLY_TEMPLATE,
             height=560,
             margin=dict(l=10, r=10, t=20, b=100),
         )
@@ -813,10 +1049,14 @@ def _page_model_comparison() -> None:
 
 def main() -> None:
     st.sidebar.title("Human Activity Recognition")
+    st.sidebar.caption("Team: Akhil · Dhairya · Aryan · Indraneel")
     page = st.sidebar.radio(
         "Navigate",
         ("Overview", "Live Demo", "Stream Simulation", "Model Comparison"),
     )
+    st.title("Human Activity Recognition")
+    st.caption("Team: Akhil · Dhairya · Aryan · Indraneel")
+    st.divider()
     if page != "Stream Simulation":
         st.session_state.stream_playing = False
 
