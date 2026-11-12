@@ -37,20 +37,44 @@ INPUT_SHAPE = (128, 6)
 DEFAULT_SEED = 42
 
 
-def build_lstm(input_shape: tuple[int, int], num_classes: int):
-    """Build the two-layer LSTM specified for the HAR project."""
+def build_lstm(
+    input_shape: tuple[int, int],
+    num_classes: int,
+    *,
+    hidden_units: int = 64,
+    dropout_rate: float = 0.3,
+    bidirectional: bool = False,
+):
+    """Build the baseline or a tuning variant of the two-layer LSTM."""
     from tensorflow import keras
     from tensorflow.keras import layers
 
+    if hidden_units < 1:
+        raise ValueError("hidden_units must be at least 1")
+    if not 0.0 <= dropout_rate < 1.0:
+        raise ValueError("dropout_rate must be in [0, 1)")
+
+    def recurrent_layer(name: str, *, return_sequences: bool):
+        inner_name = f"{name}_forward" if bidirectional else name
+        recurrent = layers.LSTM(
+            hidden_units,
+            return_sequences=return_sequences,
+            name=inner_name,
+        )
+        if bidirectional:
+            return layers.Bidirectional(recurrent, name=f"bidirectional_{name}")
+        return recurrent
+
     inputs = keras.Input(shape=input_shape, name="sensor_window")
-    x = layers.LSTM(64, return_sequences=True, name="lstm_1")(inputs)
-    x = layers.Dropout(0.3, name="dropout_1")(x)
-    x = layers.LSTM(64, name="lstm_2")(x)
+    x = recurrent_layer("lstm_1", return_sequences=True)(inputs)
+    x = layers.Dropout(dropout_rate, name="dropout_1")(x)
+    x = recurrent_layer("lstm_2", return_sequences=False)(x)
     x = layers.Dense(64, activation="relu", name="dense_1")(x)
-    x = layers.Dropout(0.3, name="dropout_2")(x)
+    x = layers.Dropout(dropout_rate, name="dropout_2")(x)
     outputs = layers.Dense(num_classes, activation="softmax", name="activity")(x)
 
-    model = keras.Model(inputs=inputs, outputs=outputs, name="LSTM_HAR")
+    model_name = "BiLSTM_HAR" if bidirectional else "LSTM_HAR"
+    model = keras.Model(inputs=inputs, outputs=outputs, name=model_name)
     model.compile(
         optimizer=keras.optimizers.Adam(clipnorm=1.0),
         loss="sparse_categorical_crossentropy",
