@@ -1,9 +1,8 @@
 # ──────────────────────────────────────────────────────────────────────────────
-# Human Activity Recognition — Python dependencies
+# Human Activity Recognition - Python dependencies
 # Tested on: Python 3.12.4, Windows 11 x64
 #
-# IMPORTANT — import order on Windows
-# ─────────────────────────────────────
+# IMPORTANT - import order on Windows
 # TensorFlow's native DLL must be loaded before NumPy/SciPy/Scikit-learn
 # initialize the OpenBLAS/OpenMP C-runtime.  The shim in src/runtime_compat.py
 # handles this automatically when the app is started via app/app.py or
@@ -17,22 +16,24 @@
 
 # Deep learning
 tensorflow==2.20.0
-keras==3.11.2         # bundled with tensorflow; listed for clarity
+keras==3.11.2
 
-# Data & ML
-numpy==1.26.4
-scipy==1.15.2
+# Classical models
 scikit-learn==1.3.2
-pandas==2.3.1
 joblib==1.5.1
 
+# Data & feature extraction
+numpy==1.26.4
+scipy==1.15.2
+pandas==2.3.1
+
 # Visualisation & app
-streamlit==1.67.0
-plotly==7.1.0
 matplotlib==3.10.1
 seaborn==0.13.2
+plotly==7.1.0
+streamlit==1.67.0
 opencv-python==4.11.0.86
 Pillow==11.1.0
 
-# Serialisation (pinned — do NOT upgrade to protobuf>=5 without testing)
+# Serialisation (pinned - do NOT upgrade to protobuf>=5 without testing)
 protobuf==4.25.8
