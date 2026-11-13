@@ -210,7 +210,8 @@ python src/evaluate.py --train-classical
 python src/train_knn.py
 ```
 
-After all metrics JSON files are present, regenerate the comparison:
+After `cnn_metrics.json`, `knn_metrics.json`, `svm_metrics.json`, `rf_metrics.json`,
+and `lstm_metrics.json` are present, regenerate the five-model comparison with:
 
 ```powershell
 python src/compare.py
