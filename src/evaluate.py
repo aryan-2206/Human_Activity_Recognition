@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import Any
 
 import joblib
+from joblib import parallel_backend
+from threadpoolctl import threadpool_limits
 import numpy as np
 import csv
 import time
@@ -24,9 +26,10 @@ from sklearn.metrics import (
     precision_score,
     recall_score,
 )
-from sklearn.preprocessing import LabelEncoder
+from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.model_selection import GridSearchCV, GroupKFold
-from sklearn.svm import SVC
+from sklearn.pipeline import make_pipeline
+from sklearn.svm import LinearSVC, SVC
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = ROOT / "data" / "processed"
@@ -135,8 +138,8 @@ def _load_array(name: str) -> np.ndarray:
     return np.load(path, allow_pickle=False)
 
 
-def train_classical_models() -> dict[str, dict[str, Any]]:
-    """Train Dhairya's SVM and Random Forest, saving models and metrics."""
+def train_classical_models(model_names: list[str] | None = None) -> dict[str, dict[str, Any]]:
+    """Train selected classical models, saving fitted models and metrics."""
     X_train, X_test = _load_array("X_train"), _load_array("X_test")
     y_train, y_test = _load_array("y_train").reshape(-1), _load_array("y_test").reshape(-1)
     if X_train.shape[0] != y_train.size or X_test.shape[0] != y_test.size:
@@ -155,35 +158,88 @@ def train_classical_models() -> dict[str, dict[str, Any]]:
 
     groups_path = DATA_DIR / "subjects_train.npy"
     groups = np.load(groups_path, allow_pickle=False) if groups_path.is_file() else None
+    if groups is not None and groups.reshape(-1).size != X_train.shape[0]:
+        raise ValueError(
+            "subjects_train.npy must contain exactly one subject ID per training sample "
+            f"({groups.reshape(-1).size} IDs for {X_train.shape[0]} samples)"
+        )
+    if groups is not None:
+        groups = groups.reshape(-1)
     cv = GroupKFold(n_splits=3) if groups is not None else 3
     searches = {
         "svm": (
-            SVC(),
-            {"C": [0.1, 1, 10], "kernel": ["linear", "rbf"]},
+            make_pipeline(StandardScaler(), SVC()),
+            [
+                {
+                    "svc": [LinearSVC(dual="auto", max_iter=10000, random_state=42)],
+                    "svc__C": [0.1],
+                },
+                {
+                    "svc": [SVC()],
+                    "svc__C": [1, 10],
+                    "svc__kernel": ["rbf"],
+                    "svc__gamma": ["scale"],
+                },
+                {
+                    "svc": [SVC()],
+                    "svc__C": [10],
+                    "svc__kernel": ["rbf"],
+                    "svc__gamma": [0.001],
+                },
+            ],
         ),
         "rf": (
             RandomForestClassifier(n_estimators=300, random_state=42, n_jobs=1),
             {"max_features": ["sqrt", 0.5], "min_samples_leaf": [1, 2]},
         ),
     }
+    selected = set(model_names or searches)
+    unknown = selected - searches.keys()
+    if unknown:
+        raise ValueError(f"Unknown classical model(s): {', '.join(sorted(unknown))}")
     MODEL_DIR.mkdir(parents=True, exist_ok=True)
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     outputs = {}
     for name, (estimator, param_grid) in searches.items():
+        if name not in selected:
+            continue
         model_cv = cv
-        search = GridSearchCV(estimator, param_grid, cv=model_cv, scoring="accuracy", n_jobs=1, refit=True, verbose=1)
+        search = GridSearchCV(
+            estimator,
+            param_grid,
+            cv=model_cv,
+            scoring="accuracy",
+            n_jobs=2,
+            pre_dispatch=2,
+            refit=True,
+            verbose=2,
+        )
         started = time.perf_counter()
-        search.fit(X_train, y_train_encoded, groups=groups)
+        # Threads share input arrays and avoid joblib worker memmap files,
+        # which can fail in restricted Windows environments.
+        with parallel_backend("threading"), threadpool_limits(limits=1):
+            search.fit(X_train, y_train_encoded, groups=groups)
         train_time_s = time.perf_counter() - started
         model = search.best_estimator_
         joblib.dump(model, MODEL_DIR / f"{name}.joblib")
+        best_params = {
+            key: value for key, value in search.best_params_.items() if key != "svc"
+        }
+        best_params["estimator"] = type(model.named_steps["svc"]).__name__
         (RESULTS_DIR / f"{name}_best_params.json").write_text(
-            json.dumps({"best_params": search.best_params_, "best_cv_accuracy": float(search.best_score_)}, indent=2) + "\n",
+            json.dumps({"best_params": best_params, "best_cv_accuracy": float(search.best_score_)}, indent=2) + "\n",
             encoding="utf-8",
         )
         started = time.perf_counter()
         pred = model.predict(X_test)
-        infer_ms_per_sample = (time.perf_counter() - started) * 1000 / len(X_test)
+        batch_infer_ms_per_sample = (time.perf_counter() - started) * 1000 / len(X_test)
+        # Measure interactive single-window latency separately from batch throughput.
+        latency_samples = X_test[: min(100, len(X_test))]
+        model.predict(latency_samples[:1])  # warm up any lazy runtime initialization
+        started = time.perf_counter()
+        for sample in latency_samples:
+            model.predict(sample.reshape(1, -1))
+        infer_ms_per_sample = (time.perf_counter() - started) * 1000 / len(latency_samples)
         outputs[name] = evaluate_predictions(
             name.upper(), y_test_encoded, pred, labels=list(range(len(class_names))),
             output_path=RESULTS_DIR / f"{name}_metrics.json",
@@ -192,6 +248,10 @@ def train_classical_models() -> dict[str, dict[str, Any]]:
         outputs[name]["labels"] = _json_value(class_names)
         outputs[name]["train_time_s"] = float(train_time_s)
         outputs[name]["infer_ms_per_sample"] = float(infer_ms_per_sample)
+        outputs[name]["batch_infer_ms_per_sample"] = float(batch_infer_ms_per_sample)
+        outputs[name]["inference_timing_method"] = (
+            f"single-window predict latency averaged over {len(latency_samples)} warmed samples"
+        )
         (RESULTS_DIR / f"{name}_metrics.json").write_text(
             json.dumps(outputs[name], indent=2) + "\n", encoding="utf-8"
         )
@@ -220,9 +280,13 @@ def train_classical_models() -> dict[str, dict[str, Any]]:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--train-classical", action="store_true", help="Train SVM and Random Forest")
+    parser.add_argument(
+        "--models", nargs="+", choices=("svm", "rf"), default=None,
+        help="Optionally train only selected models (for example: --models svm)",
+    )
     args = parser.parse_args()
     if args.train_classical:
-        train_classical_models()
+        train_classical_models(args.models)
     else:
         parser.print_help()
 

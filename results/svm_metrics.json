@@ -1,71 +1,73 @@
 {
   "model": "SVM",
-  "accuracy": 0.8846284356973193,
-  "precision_macro": 0.8835692324758427,
-  "recall_macro": 0.8840547654362494,
-  "f1_macro": 0.8829185268661863,
-  "precision_weighted": 0.886479766891241,
-  "recall_weighted": 0.8846284356973193,
-  "f1_weighted": 0.8847178828808824,
+  "accuracy": 0.8917543264336614,
+  "precision_macro": 0.889951382615056,
+  "recall_macro": 0.890754971555069,
+  "f1_macro": 0.8898832685052738,
+  "precision_weighted": 0.8920380724986287,
+  "recall_weighted": 0.8917543264336614,
+  "f1_weighted": 0.8914536588996952,
   "labels": [
-    "WALKING",
-    "WALKING_UPSTAIRS",
-    "WALKING_DOWNSTAIRS",
-    "SITTING",
-    "STANDING",
-    "LAYING"
+    0,
+    1,
+    2,
+    3,
+    4,
+    5
   ],
   "confusion_matrix": [
     [
-      453,
+      458,
       2,
-      35,
+      30,
       1,
       5,
       0
     ],
     [
       3,
-      414,
-      54,
+      423,
+      45,
       0,
       0,
       0
     ],
     [
-      33,
-      6,
-      381,
+      35,
+      8,
+      377,
       0,
       0,
       0
     ],
     [
-      2,
-      22,
+      4,
+      20,
       0,
-      379,
-      88,
+      380,
+      87,
       0
     ],
     [
       1,
       7,
       0,
-      64,
-      460,
+      71,
+      453,
       0
     ],
     [
       0,
-      17,
       0,
       0,
       0,
-      520
+      0,
+      537
     ]
   ],
   "n_samples": 2947,
-  "train_time_s": 1192.8821628000587,
-  "infer_ms_per_sample": 22.550795249410875
+  "train_time_s": 90.02774900000077,
+  "infer_ms_per_sample": 2.185755000100471,
+  "batch_infer_ms_per_sample": 2.2405192738423874,
+  "inference_timing_method": "single-window predict latency averaged over 100 warmed samples"
 }

@@ -67,5 +67,7 @@
   ],
   "n_samples": 2947,
   "train_time_s": 580.2785394999664,
-  "infer_ms_per_sample": 0.16705676953396456
+  "infer_ms_per_sample": 49.89975599979516,
+  "batch_infer_ms_per_sample": 0.035796131658066645,
+  "inference_timing_method": "single-window predict latency averaged over 100 warmed samples"
 }
