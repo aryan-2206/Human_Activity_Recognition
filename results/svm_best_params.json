@@ -1,7 +1,9 @@
 {
   "best_params": {
-    "C": 10,
-    "kernel": "rbf"
+    "svc__C": 10,
+    "svc__gamma": 0.001,
+    "svc__kernel": "rbf",
+    "estimator": "SVC"
   },
-  "best_cv_accuracy": 0.9367511802762721
+  "best_cv_accuracy": 0.8993812819664283
 }
